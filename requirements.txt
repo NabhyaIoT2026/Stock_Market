@@ -1,0 +1,9 @@
+streamlit
+tensorflow-cpu
+numpy
+pandas
+matplotlib
+yfinance
+scikit-learn
+requests
+beautifulsoup4
