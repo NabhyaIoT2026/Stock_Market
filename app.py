@@ -20,6 +20,7 @@ def fetch_stock_data(stock_symbol, days=120):
 # Function to fetch stock details
 def fetch_stock_details(stock_symbol):
     try:
+        st.markdown('[🔍 Find Stock Symbols](https://finance.yahoo.com/lookup)', unsafe_allow_html=True)  # Added link
         stock = yf.Ticker(stock_symbol)
         info = stock.info
         currency_symbol = "₹" if ".NS" in stock_symbol or ".BO" in stock_symbol else "$"
