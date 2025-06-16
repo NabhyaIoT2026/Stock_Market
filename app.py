@@ -3,28 +3,15 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 import matplotlib.pyplot as plt
-import yfinance as yf
 from datetime import datetime, timedelta
 from sklearn.preprocessing import MinMaxScaler
 import requests
 import time
-import random
+import warnings
+warnings.filterwarnings('ignore')
 
 # Must be the first Streamlit command
 st.set_page_config(page_title="Stock Market Prediction", layout="wide", initial_sidebar_state="expanded")
-
-# Configure yfinance session with proper headers
-def setup_yfinance_session():
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Accept-Encoding': 'gzip, deflate',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-    })
-    return session
 
 # Load the trained Keras model
 @st.cache_resource
@@ -37,231 +24,150 @@ def load_model():
 
 model = load_model()
 
-# Enhanced function to fetch historical stock data with multiple fallback methods
-@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
-def fetch_stock_data(stock_symbol, days=120):
-    """Fetch stock data with multiple fallback methods"""
-    
-    def method1_standard():
-        """Standard yfinance download"""
-        try:
-            end_date = datetime.today()
-            start_date = end_date - timedelta(days=days)
-            df = yf.download(
-                stock_symbol, 
-                start=start_date, 
-                end=end_date,
-                progress=False,
-                show_errors=False,
-                timeout=15,
-                threads=True
-            )
-            if not df.empty and 'Close' in df.columns:
-                return df['Close'].values, df.index.to_numpy(), df
-        except:
-            pass
-        return None, None, None
+# Alpha Vantage API Key - Replace with your actual API key
+ALPHA_VANTAGE_API_KEY = "XL2JSQ1Q4PBP0AE2"  # Replace this with your actual API key
 
-    def method2_ticker_history():
-        """Using Ticker.history method"""
-        try:
-            ticker = yf.Ticker(stock_symbol)
-            # Try different period formats
-            for period in [f"{days}d", "3mo", "6mo"]:
-                try:
-                    hist = ticker.history(period=period, timeout=15)
-                    if not hist.empty and len(hist) >= 30:
-                        return hist['Close'].values, hist.index.to_numpy(), hist
-                except:
-                    continue
-        except:
-            pass
-        return None, None, None
-
-    def method3_with_session():
-        """Using custom session"""
-        try:
-            session = setup_yfinance_session()
-            ticker = yf.Ticker(stock_symbol, session=session)
-            hist = ticker.history(period=f"{days}d", timeout=20)
-            if not hist.empty:
-                return hist['Close'].values, hist.index.to_numpy(), hist
-        except:
-            pass
-        return None, None, None
-
-    def method4_date_range():
-        """Using specific date range with retry"""
-        try:
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=days)
+# Alpha Vantage data fetching function
+def fetch_from_alpha_vantage(stock_symbol, api_key=ALPHA_VANTAGE_API_KEY):
+    """Fetch data from Alpha Vantage API"""
+    try:
+        url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={stock_symbol}&apikey={api_key}"
+        response = requests.get(url, timeout=30)
+        data = response.json()
+        
+        # Check for API error messages
+        if "Error Message" in data:
+            return None, None, None, f"Error: {data['Error Message']}"
+        
+        if "Note" in data:
+            return None, None, None, "API call frequency limit reached. Please try again later."
+        
+        if "Information" in data:
+            return None, None, None, f"API Info: {data['Information']}"
+        
+        if "Time Series (Daily)" in data:
+            time_series = data["Time Series (Daily)"]
+            dates = []
+            closes = []
+            highs = []
+            lows = []
+            volumes = []
             
-            ticker = yf.Ticker(stock_symbol)
-            hist = ticker.history(
-                start=start_date.strftime('%Y-%m-%d'),
-                end=end_date.strftime('%Y-%m-%d'),
-                timeout=20
-            )
-            if not hist.empty:
-                return hist['Close'].values, hist.index.to_numpy(), hist
-        except:
-            pass
-        return None, None, None
+            # Sort dates to ensure chronological order
+            sorted_dates = sorted(time_series.keys())
+            
+            for date_str in sorted_dates:
+                values = time_series[date_str]
+                dates.append(np.datetime64(date_str))
+                closes.append(float(values["4. close"]))
+                highs.append(float(values["2. high"]))
+                lows.append(float(values["3. low"]))
+                volumes.append(int(values["5. volume"]))
+            
+            if len(closes) >= 10:
+                df = pd.DataFrame({
+                    'Date': dates,
+                    'Close': closes,
+                    'High': highs,
+                    'Low': lows,
+                    'Volume': volumes
+                })
+                return np.array(closes), np.array(dates), df, "Success"
+        
+        return None, None, None, "No data found in API response"
+        
+    except requests.exceptions.Timeout:
+        return None, None, None, "Request timeout. Please try again."
+    except requests.exceptions.RequestException as e:
+        return None, None, None, f"Network error: {str(e)}"
+    except Exception as e:
+        return None, None, None, f"Unexpected error: {str(e)}"
 
-    # Try all methods with delays
-    methods = [method1_standard, method2_ticker_history, method3_with_session, method4_date_range]
+# Main data fetching function
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_stock_data(stock_symbol):
+    """Fetch stock data from Alpha Vantage"""
     
-    with st.spinner(f"Fetching data for {stock_symbol}..."):
-        for i, method in enumerate(methods):
-            try:
-                # Add random delay to avoid rate limiting
-                if i > 0:
-                    time.sleep(random.uniform(0.5, 1.5))
-                
-                result = method()
-                if result[0] is not None and len(result[0]) >= 30:
-                    st.success(f"✅ Data fetched successfully using method {i+1}")
-                    return result
-                    
-            except Exception as e:
-                st.warning(f"Method {i+1} failed: {str(e)[:50]}...")
-                continue
+    stock_symbol = stock_symbol.strip().upper()
     
-    return None, None, None
+    with st.spinner(f"Fetching data for {stock_symbol} from Alpha Vantage..."):
+        prices, dates, df, message = fetch_from_alpha_vantage(stock_symbol)
+        
+        if prices is not None and len(prices) >= 10:
+            st.success(f"✅ Data fetched successfully from Alpha Vantage")
+            st.write(f"📊 Retrieved {len(prices)} data points")
+            return prices, dates, df
+        else:
+            st.error(f"❌ Alpha Vantage API Error: {message}")
+            return None, None, None
 
-# Enhanced function to fetch stock details with multiple methods
-@st.cache_data(ttl=600, show_spinner=False)  # Cache for 10 minutes
+# Enhanced stock details function using Alpha Vantage
+@st.cache_data(ttl=600, show_spinner=False)
 def fetch_stock_details(stock_symbol):
-    """Fetch stock details with multiple fallback methods"""
+    """Fetch stock details from Alpha Vantage"""
     
-    def method1_info():
-        """Standard info method"""
-        try:
-            session = setup_yfinance_session()
-            stock = yf.Ticker(stock_symbol, session=session)
-            time.sleep(random.uniform(0.2, 0.5))
-            info = stock.info
-            if info and len(info) > 5:
-                return info
-        except:
-            pass
-        return None
-    
-    def method2_no_session():
-        """Without custom session"""
-        try:
-            stock = yf.Ticker(stock_symbol)
-            time.sleep(random.uniform(0.2, 0.5))
-            info = stock.info
-            if info and len(info) > 5:
-                return info
-        except:
-            pass
-        return None
-    
-    def method3_basic_info():
-        """Get basic info from history data"""
-        try:
-            stock = yf.Ticker(stock_symbol)
-            hist = stock.history(period="1d")
-            if not hist.empty:
-                latest = hist.iloc[-1]
-                return {
-                    'longName': stock_symbol,
-                    'currentPrice': float(latest['Close']),
-                    'dayHigh': float(latest['High']),
-                    'dayLow': float(latest['Low']),
-                    'volume': int(latest['Volume']),
-                    'regularMarketPrice': float(latest['Close']),
-                    'regularMarketDayHigh': float(latest['High']),
-                    'regularMarketDayLow': float(latest['Low']),
-                    'regularMarketVolume': int(latest['Volume'])
-                }
-        except:
-            pass
-        return None
-    
-    # Try different methods
-    methods = [method1_info, method2_no_session, method3_basic_info]
-    info = None
-    
-    for i, method in enumerate(methods):
-        try:
-            info = method()
-            if info:
-                break
-        except Exception as e:
-            continue
-    
-    # If all methods fail, return defaults
-    if not info:
-        return stock_symbol.upper(), 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', ''
-    
-    # Process the info
-    currency_symbol = "₹" if ".NS" in stock_symbol or ".BO" in stock_symbol else "$"
-    
-    # Helper function to format price
-    def format_price(price):
-        if price and price != 'N/A':
-            try:
-                return f"{currency_symbol}{float(price):.2f}"
-            except:
-                return 'N/A'
-        return 'N/A'
-    
-    # Helper function to format volume/market cap
-    def format_large_number(num):
-        if num and num != 'N/A':
-            try:
-                num = float(num)
-                if num >= 1e12:
-                    return f"{num/1e12:.2f}T"
-                elif num >= 1e9:
-                    return f"{num/1e9:.2f}B"
-                elif num >= 1e6:
-                    return f"{num/1e6:.2f}M"
-                elif num >= 1e3:
-                    return f"{num/1e3:.2f}K"
-                else:
-                    return f"{num:.0f}"
-            except:
-                return 'N/A'
-        return 'N/A'
+    stock_symbol = stock_symbol.strip().upper()
     
     try:
-        company_name = (info.get('longName') or 
-                       info.get('shortName') or 
-                       stock_symbol.upper())
+        # Fetch overview data
+        overview_url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={stock_symbol}&apikey={ALPHA_VANTAGE_API_KEY}"
+        overview_response = requests.get(overview_url, timeout=30)
+        overview_data = overview_response.json()
         
-        current_price = format_price(
-            info.get('currentPrice') or 
-            info.get('regularMarketPrice') or 
-            info.get('previousClose')
-        )
+        # Fetch quote data for current price
+        quote_url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={stock_symbol}&apikey={ALPHA_VANTAGE_API_KEY}"
+        quote_response = requests.get(quote_url, timeout=30)
+        quote_data = quote_response.json()
         
-        day_high = format_price(
-            info.get('dayHigh') or 
-            info.get('regularMarketDayHigh')
-        )
+        # Process overview data
+        company_name = overview_data.get('Name', stock_symbol.upper())
+        market_cap = overview_data.get('MarketCapitalization', 'N/A')
+        sector = overview_data.get('Sector', 'N/A')
         
-        day_low = format_price(
-            info.get('dayLow') or 
-            info.get('regularMarketDayLow')
-        )
+        # Process quote data
+        quote_info = quote_data.get('Global Quote', {})
+        current_price = quote_info.get('05. price', 'N/A')
+        day_high = quote_info.get('03. high', 'N/A')
+        day_low = quote_info.get('04. low', 'N/A')
+        volume = quote_info.get('06. volume', 'N/A')
         
-        market_cap = format_large_number(info.get('marketCap'))
-        volume = format_large_number(
-            info.get('volume') or 
-            info.get('regularMarketVolume')
-        )
+        # Format data
+        def format_price(price):
+            if price and price != 'N/A':
+                try:
+                    return f"${float(price):.2f}"
+                except:
+                    return 'N/A'
+            return 'N/A'
         
-        sector = info.get('sector', 'N/A')
-        logo_url = info.get('logo_url', '')
+        def format_large_number(num):
+            if num and num != 'N/A':
+                try:
+                    num = float(num)
+                    if num >= 1e12:
+                        return f"{num/1e12:.2f}T"
+                    elif num >= 1e9:
+                        return f"{num/1e9:.2f}B"
+                    elif num >= 1e6:
+                        return f"{num/1e6:.2f}M"
+                    elif num >= 1e3:
+                        return f"{num/1e3:.2f}K"
+                    else:
+                        return f"{num:.0f}"
+                except:
+                    return 'N/A'
+            return 'N/A'
         
-        return company_name, current_price, day_high, day_low, market_cap, volume, sector, logo_url
+        current_price_formatted = format_price(current_price)
+        day_high_formatted = format_price(day_high)
+        day_low_formatted = format_price(day_low)
+        market_cap_formatted = format_large_number(market_cap)
+        volume_formatted = format_large_number(volume)
+        
+        return company_name, current_price_formatted, day_high_formatted, day_low_formatted, market_cap_formatted, volume_formatted, sector
         
     except Exception as e:
-        return stock_symbol.upper(), 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', ''
+        return stock_symbol.upper(), 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A'
 
 # Function to generate future dates
 def generate_future_dates(start_date, days):
@@ -275,7 +181,16 @@ def normalize_data(data):
 
 # Function to prepare model input
 def prepare_model_input(stock_prices):
-    scaled_prices, scaler = normalize_data(stock_prices)
+    # Ensure we have enough data
+    if len(stock_prices) < 30:
+        # If we don't have enough data, pad with the last value
+        padding_needed = 30 - len(stock_prices)
+        last_price = stock_prices[-1]
+        padded_prices = np.concatenate([np.full(padding_needed, last_price), stock_prices])
+        scaled_prices, scaler = normalize_data(padded_prices)
+    else:
+        scaled_prices, scaler = normalize_data(stock_prices)
+    
     return np.array(scaled_prices[-30:]).reshape(1, 30, 1), scaler
 
 # Function to predict stock prices
@@ -285,18 +200,22 @@ def predict_stock_prices(stock_symbol, prediction_days=30):
         return None, None, None, None
         
     stock_prices, stock_dates, stock_df = fetch_stock_data(stock_symbol)
-    if stock_prices is None or len(stock_prices) < 30:
+    if stock_prices is None or len(stock_prices) < 5:
         return None, None, None, None
 
-    input_data, scaler = prepare_model_input(stock_prices)
-    predictions = model.predict(input_data).flatten()[:prediction_days]
-    predictions = scaler.inverse_transform(predictions.reshape(-1, 1)).flatten()
-    future_dates = generate_future_dates(stock_dates[-1], len(predictions))
+    try:
+        input_data, scaler = prepare_model_input(stock_prices)
+        predictions = model.predict(input_data).flatten()[:prediction_days]
+        predictions = scaler.inverse_transform(predictions.reshape(-1, 1)).flatten()
+        future_dates = generate_future_dates(stock_dates[-1], len(predictions))
 
-    future_dates = future_dates.astype('datetime64[D]')
-    return stock_dates, stock_prices, (future_dates, predictions), stock_df
+        future_dates = future_dates.astype('datetime64[D]')
+        return stock_dates, stock_prices, (future_dates, predictions), stock_df
+    except Exception as e:
+        st.error(f"Prediction error: {str(e)}")
+        return None, None, None, None
 
-# Streamlit UI (page config moved to top)
+# Streamlit UI
 
 st.markdown("""
     <style>
@@ -337,46 +256,59 @@ st.markdown("""
             color: #f39c12;
             font-weight: bold;
         }
+        .stock-link {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 20px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: bold;
+            display: inline-block;
+            margin: 10px 0;
+            transition: transform 0.2s;
+        }
+        .stock-link:hover {
+            transform: translateY(-2px);
+            text-decoration: none;
+            color: white;
+        }
     </style>
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="stTitle">🚀 Stock Market Prediction</div>', unsafe_allow_html=True)
-st.markdown('<div class="stDescription">📊 This model uses Yahoo Finance data to analyze and predict stock behavior for the next few days.</div>', unsafe_allow_html=True)
+st.markdown('<div class="stDescription">📊 This model uses Alpha Vantage API to analyze and predict stock behavior for the next few days.</div>', unsafe_allow_html=True)
 
-# Add troubleshooting info
-with st.expander("ℹ️ Troubleshooting Tips"):
+# Add Alpha Vantage info
+with st.expander("📡 Alpha Vantage Information"):
     st.write("""
-    **If you're getting data fetch errors:**
-    - Try popular symbols like: AAPL, GOOGL, MSFT, TSLA, AMZN
-    - For Indian stocks, use .NS suffix (e.g., RELIANCE.NS, TCS.NS)
-    - Wait a few seconds between requests
-    - Some symbols might be temporarily unavailable due to Yahoo Finance restrictions
+    **This app uses Alpha Vantage API for stock data:**
+    
+    - **Real-time and historical stock data**
+    - **Company fundamentals and overview**
+    - **Global market coverage**
+    
+    **Popular Stock Symbols to Try:**
+    - **US Stocks:** AAPL, GOOGL, MSFT, TSLA, AMZN, NVDA, META
+    - **International:** Use appropriate exchange suffixes
+    
+    **API Limitations:**
+    - Free tier: 5 API requests per minute, 500 requests per day
+    - Premium: Higher limits available
+    
+    **Get your free API key:** [Alpha Vantage API Key](https://www.alphavantage.co/support/#api-key)
     """)
 
 with st.sidebar:
-    st.markdown('[🔍 Find Stock Symbols](https://finance.yahoo.com/lookup)', unsafe_allow_html=True)
-    stock_symbol = st.text_input("Stock Symbol (e.g., TSLA, GOOG, MRF.NS for India)", "AAPL")
-    
-    # Test connection button
-    if st.button("🔗 Test Connection"):
-        test_data, _, _ = fetch_stock_data(stock_symbol, days=30)
-        if test_data is not None:
-            st.success("✅ Connection successful!")
-        else:
-            st.error("❌ Connection failed. Try another symbol.")
+    st.markdown('### 📈 Stock Selection')
+    stock_symbol = st.text_input("Stock Symbol (e.g., AAPL, GOOGL, MSFT)", "AAPL")
     
     # Fetch company details with error handling
     if stock_symbol:
         with st.spinner("Loading stock details..."):
             try:
-                company_name, current_price, day_high, day_low, market_cap, volume, sector, logo_url = fetch_stock_details(stock_symbol)
+                company_name, current_price, day_high, day_low, market_cap, volume, sector = fetch_stock_details(stock_symbol)
                 
                 st.write(f"### {company_name}")
-                if logo_url:
-                    try:
-                        st.image(logo_url, width=100)
-                    except:
-                        pass
                 
                 # Create a nice info box
                 info_col1, info_col2 = st.columns(2)
@@ -391,29 +323,61 @@ with st.sidebar:
                     st.write(f"**Sector:** {sector}")
                 
                 if current_price != 'N/A':
-                    st.success("✅ Stock details loaded successfully!")
+                    st.success("✅ Stock details loaded!")
                 else:
-                    st.warning("⚠️ Limited data available for this symbol")
+                    st.warning("⚠️ Limited data available")
                     
             except Exception as e:
-                st.error(f"❌ Could not load stock details: {str(e)[:50]}...")
-                st.info("💡 Prediction may still work even if details fail to load")
+                st.error(f"❌ Could not load stock details")
+                st.info("💡 Prediction may still work")
     
-    predict_button = st.button("🔮 Predict")
+    predict_button = st.button("Predict")
+    
+    # Browse all available stocks link
+    st.markdown("""
+    <style>
+        .stock-link {
+            display: inline-block;
+            padding: 12px 20px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white !important;
+            text-decoration: none !important;
+            font-weight: bold;
+            font-size: 16px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .stock-link:hover {
+            transform: scale(1.03);
+            box-shadow: 0 6px 10px rgba(0, 0, 0, 0.15);
+        }
+    </style>
+
+    <div style="text-align: center; margin: 30px 0;">
+        <a href="https://www.alphavantage.co/query?function=LISTING_STATUS&apikey=demo" 
+           target="_blank" 
+           class="stock-link">
+            Alpha Vantage Stock Search Guide
+        </a>
+    </div>
+""", unsafe_allow_html=True)
+
+
 
 if predict_button:
     if model is None:
         st.error("❌ Model not loaded. Please check if 'keras_model.h5' exists.")
     else:
-        with st.spinner("Processing prediction..."):
+        with st.spinner("Processing prediction using Alpha Vantage data..."):
             stock_dates, historical_prices, prediction_data, stock_df = predict_stock_prices(stock_symbol)
 
         if historical_prices is None:
-            st.error("❌ Could not fetch stock data. Please try:")
-            st.write("1. A different stock symbol (e.g., AAPL, GOOGL, MSFT)")
-            st.write("2. Adding .NS for Indian stocks (e.g., RELIANCE.NS)")
-            st.write("3. Waiting a few minutes and trying again")
-            st.write("4. Check if the symbol exists on Yahoo Finance")
+            st.error("❌ Could not fetch stock data from Alpha Vantage. Please check:")
+            st.write("1. Your API key is valid and has remaining quota")
+            st.write("2. The stock symbol is correct (e.g., AAPL, GOOGL, MSFT)")
+            st.write("3. Your internet connection")
+            st.write("4. Try again after a minute (API rate limits)")
         else:
             future_dates, predictions = prediction_data
             predictions = np.array(predictions).flatten()
@@ -431,7 +395,7 @@ if predict_button:
             ax.plot(extended_dates, extended_prices, linestyle='dashed', color='#e74c3c', linewidth=2, label='📊 Future Trend')
             ax.scatter(future_dates, predictions, color='#2ecc71', marker='o', label='🎯 Predicted Prices', s=60)
             ax.set_xlim(stock_dates[0], future_dates[-1] + np.timedelta64(10, 'D'))
-            ax.set_xticks(stock_dates[::10])
+            ax.set_xticks(stock_dates[::max(1, len(stock_dates)//10)])
             plt.xticks(rotation=45, fontsize=12, color='#2c3e50')
             plt.yticks(fontsize=12, color='#2c3e50')
             ax.set_title(f"Stock Price Prediction for {stock_symbol}", fontsize=16, color='#2c3e50')
@@ -440,12 +404,20 @@ if predict_button:
             ax.legend()
             st.pyplot(fig)
             
-            st.subheader(f"📋 Stock Details for {stock_symbol} (Previous 5 Days)")
+            st.subheader(f"📋 Stock Details for {stock_symbol} (Last Available Days)")
             if stock_df is not None and not stock_df.empty:
-                st.write(stock_df.tail(5))
+                display_df = stock_df.tail(min(5, len(stock_df)))
+                st.write(display_df)
             
             st.subheader("💡 Investment Insights")
-            st.write("Based on the predicted trend, this stock may show an upward or downward movement.")
-            st.write("It's advisable to analyze market conditions and company performance before investing.")
-            st.write(f"For real-time news and updates, check [latest stock news](https://www.google.com/search?q={stock_symbol}+stock+news).")
+            current_price = historical_prices[-1]
+            avg_prediction = np.mean(predictions)
+            trend = "upward" if avg_prediction > current_price else "downward"
+            
+            st.write(f"📊 **Current Price:** ${current_price:.2f}")
+            st.write(f"📈 **Average Predicted Price:** ${avg_prediction:.2f}")
+            st.write(f"📉 **Predicted Trend:** {trend.capitalize()}")
+            st.write("⚠️ **Disclaimer:** This prediction is based on historical data and should not be considered as financial advice.")
+            st.write("🔍 It's advisable to analyze market conditions and company performance before investing.")
+            st.write(f"📰 For real-time news and updates, check [latest stock news](https://www.google.com/search?q={stock_symbol}+stock+news).")
             st.markdown('<div class="stFooter">Made by <a href="https://www.linkedin.com/in/nabhya-sharma-b0a374248/" target="_blank">Nabhya Sharma</a></div>', unsafe_allow_html=True)
