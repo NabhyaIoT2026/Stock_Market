@@ -2,15 +2,15 @@
 
 This project predicts future stock prices using historical data and real-time updates. It leverages a multi-layer LSTM model with ReLU activation and dropout regularization for effective time series forecasting.
 
+## 🔗 Live Demo
+🚀 Deployed App: [StockMarket Insider](https://stockmarket-insider.streamlit.app/)
+
 ## 🔧 Features
 - 25+ years of historical stock data via `yfinance`
 - Real-time data integration using Alpha Vantage API
 - LSTM neural network with ReLU activation function and dropout (0.2–0.5)
 - Interactive and responsive UI built with Streamlit
 - Visual trend predictions for the next 30 days
-
-## 🔗 Live Demo
-🚀 Deployed App: [StockMarket Insider](https://stockmarket-insider.streamlit.app/)
 
 ## 🛠️ Tech Stack
 - Python
