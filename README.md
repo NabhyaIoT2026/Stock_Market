@@ -10,7 +10,7 @@ This project predicts future stock prices using historical data and real-time up
 - Real-time data integration using Alpha Vantage API
 - LSTM neural network with ReLU activation function and dropout (0.2–0.5)
 - Interactive and responsive UI built with Streamlit
-- Visual trend predictions for the next 30 days
+- Visual trend predictions for the next few days
 
 ## 🛠️ Tech Stack
 - Python
@@ -23,7 +23,3 @@ This project predicts future stock prices using historical data and real-time up
 
 ## ⚠️ Disclaimer
 This is a machine learning-based trend prediction tool. It is not financial advice. Please consult a financial expert before making investment decisions.
-
----
-
-Feel free to copy this into your `README.md`. Let me know if you want badges, screenshots, or instructions to run it locally.
